@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>보드게임 카드 추출기</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        .card-result {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .card-serial {
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        .card-source {
+            font-size: 0.85em;
+            opacity: 0.8;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        body {
+            background-color: #f8f9fa;
+        }
+        .main-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <div class="card">
+            <div class="card-header text-center">
+                <h2 class="mb-0">🎯 보드게임 카드 추출기</h2>
+            </div>
+            <div class="card-body">
+                <form id="cardForm">
+                    <div class="mb-3">
+                        <label for="placeCode" class="form-label">장소 코드</label>
+                        <input type="text" class="form-control" id="placeCode" placeholder="장소 코드를 입력하세요">
+                    </div>
+                    <div class="mb-3">
+                        <label for="personCode" class="form-label">인물 코드</label>
+                        <input type="text" class="form-control" id="personCode" placeholder="인물 코드를 입력하세요">
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 btn-lg">카드 추출</button>
+                </form>
+
+                <div id="errorMessage" style="display: none;"></div>
+                <div id="results" style="display: none;">
+                    <hr>
+                    <h4 id="cardListTitle">📋 추출된 카드 목록</h4>
+                    <div id="cardList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let excelData = null;
+
+        // Excel 파일 로드
+        async function loadExcelFile() {
+            try {
+                const response = await fetch('index_db.xlsx');
+                const arrayBuffer = await response.arrayBuffer();
+                const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                
+                excelData = {
+                    answer_card: XLSX.utils.sheet_to_json(workbook.Sheets['answer_card'], { header: 1 }),
+                    result: XLSX.utils.sheet_to_json(workbook.Sheets['result'], { header: 1 }),
+                    characteristics: XLSX.utils.sheet_to_json(workbook.Sheets['characteristics'], { header: 1 }),
+                    except: XLSX.utils.sheet_to_json(workbook.Sheets['except'], { header: 1 })
+                };
+                
+                console.log('Excel 데이터 로드 완료');
+            } catch (error) {
+                console.error('Excel 파일 로드 실패:', error);
+                showError('Excel 파일을 불러올 수 없습니다. index_db.xlsx 파일이 있는지 확인해주세요.');
+            }
+        }
+
+        // 에러 메시지 표시
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.innerHTML = `<div class="error-message">${message}</div>`;
+            errorDiv.style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+        }
+
+        // 결과 표시
+        function showResults(cards) {
+            const errorDiv = document.getElementById('errorMessage');
+            const resultsDiv = document.getElementById('results');
+            const cardListDiv = document.getElementById('cardList');
+            const cardListTitle = document.getElementById('cardListTitle');
+            
+            errorDiv.style.display = 'none';
+            
+            // 카드 갯수 표시
+            cardListTitle.textContent = `📋 추출된 카드 목록 ${cards.length}장`;
+            
+            if (cards.length === 0) {
+                cardListDiv.innerHTML = '<p class="text-muted">추출된 카드가 없습니다.</p>';
+            } else {
+                cardListDiv.innerHTML = cards.map(card => `
+                    <div class="card-result">
+                        <div class="card-serial">${card.serial}</div>
+                    </div>
+                `).join('');
+            }
+            
+            resultsDiv.style.display = 'block';
+        }
+
+        // 문자열 정리 (공백 제거)
+        function cleanString(str) {
+            return str ? str.toString().trim() : '';
+        }
+
+        // 배열에서 값 찾기
+        function findInColumn(data, columnIndex, searchValue) {
+            for (let i = 0; i < data.length; i++) {
+                if (cleanString(data[i][columnIndex]) === cleanString(searchValue)) {
+                    return data[i];
+                }
+            }
+            return null;
+        }
+
+        // 모든 인물명 가져오기
+        function getAllPersonNames() {
+            const personNames = [];
+            for (let row of excelData.answer_card) {
+                if (row[3]) { // D열 (인물명)
+                    personNames.push(cleanString(row[3]));
+                }
+            }
+            return [...new Set(personNames)]; // 중복 제거
+        }
+
+        // 카드 추출 로직
+        function extractCards(placeCode, personCode) {
+            const cards = [];
+            const addedSerials = new Set();
+
+            // Step 1: 입력 유효성 검사
+            const placeRow = findInColumn(excelData.answer_card, 0, placeCode); // A열에서 장소코드 찾기
+            const personRow = findInColumn(excelData.answer_card, 2, personCode); // C열에서 인물코드 찾기
+
+            if (!placeRow && !personRow) {
+                throw new Error('장소와 인물코드의 일련번호가 잘못되었습니다.');
+            } else if (!placeRow) {
+                throw new Error('장소 코드의 일련번호가 잘못되었습니다.');
+            } else if (!personRow) {
+                throw new Error('인물 코드의 일련번호가 잘못되었습니다.');
+            }
+
+            const placeName = cleanString(placeRow[1]); // B열 장소명
+            const personName = cleanString(personRow[3]); // D열 인물명
+
+            // Step 2: 장소 처리
+            for (let row of excelData.result) {
+                if (cleanString(row[0]) === placeName) {
+                    for (let i = 1; i <= 4; i++) { // B~E열
+                        if (row[i]) {
+                            const serial = cleanString(row[i]);
+                            if (serial && !addedSerials.has(serial)) {
+                                cards.push({
+                                    serial: serial,
+                                    source: `장소 (${placeName})`
+                                });
+                                addedSerials.add(serial);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Step 3: 인물 특성 처리
+            for (let row of excelData.characteristics) {
+                if (cleanString(row[0]) === personName) {
+                    for (let i = 1; i <= 4; i++) { // B~E열 특성들
+                        if (row[i]) {
+                            const characteristic = cleanString(row[i]);
+                            
+                            // except 시트에서 해당 특성의 카드들 찾기
+                            for (let exceptRow of excelData.except) {
+                                if (cleanString(exceptRow[0]) === characteristic) {
+                                    for (let j = 1; j <= 5; j++) { // B~F열
+                                        if (exceptRow[j]) {
+                                            const serial = cleanString(exceptRow[j]);
+                                            if (serial && !addedSerials.has(serial)) {
+                                                cards.push({
+                                                    serial: serial,
+                                                    source: `특성 (${characteristic})`
+                                                });
+                                                addedSerials.add(serial);
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Step 4: 인물 result 처리
+            for (let row of excelData.result) {
+                if (cleanString(row[0]) === personName) {
+                    for (let i = 1; i <= 5; i++) { // B~F열
+                        if (row[i]) {
+                            const serial = cleanString(row[i]);
+                            if (serial && !addedSerials.has(serial)) {
+                                cards.push({
+                                    serial: serial,
+                                    source: `인물 result (${personName})`
+                                });
+                                addedSerials.add(serial);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Step 5: 다른 인물들의 except 처리
+            const allPersonNames = getAllPersonNames();
+            for (let otherPersonName of allPersonNames) {
+                if (otherPersonName !== personName) {
+                    for (let exceptRow of excelData.except) {
+                        if (cleanString(exceptRow[0]) === otherPersonName) {
+                            for (let i = 1; i <= 5; i++) { // B~F열
+                                if (exceptRow[i]) {
+                                    const serial = cleanString(exceptRow[i]);
+                                    if (serial && !addedSerials.has(serial)) {
+                                        cards.push({
+                                            serial: serial,
+                                            source: `인물 except (${otherPersonName})`
+                                        });
+                                        addedSerials.add(serial);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return cards;
+        }
+
+        // 폼 제출 처리
+        document.getElementById('cardForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            if (!excelData) {
+                showError('Excel 파일이 아직 로드되지 않았습니다. 잠시 후 다시 시도해주세요.');
+                return;
+            }
+
+            const placeCode = document.getElementById('placeCode').value.trim();
+            const personCode = document.getElementById('personCode').value.trim();
+
+            if (!placeCode && !personCode) {
+                showError('장소와 인물코드를 입력해주세요.');
+                return;
+            } else if (!placeCode) {
+                showError('장소 코드를 입력해주세요.');
+                return;
+            } else if (!personCode) {
+                showError('인물 코드를 입력해주세요.');
+                return;
+            }
+
+            try {
+                const cards = extractCards(placeCode, personCode);
+                showResults(cards);
+            } catch (error) {
+                showError(error.message);
+            }
+        });
+
+        // 페이지 로드 시 Excel 파일 로드
+        window.addEventListener('load', loadExcelFile);
+    </script>
+</body>
+</html>
